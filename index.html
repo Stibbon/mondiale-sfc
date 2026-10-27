@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#0F1930">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+<script>window.SUPA_CFG={url:'https://fldjifkzzstfxlhmvczy.supabase.co',key:'sb_publishable_fCIQee_WzfZwphJDexOUoQ_b6937Aco'};</script>
 </head>
 <body>
 <title>Mondiale Sasso Carta Forbice</title>
@@ -1712,6 +1714,7 @@ function retireCareer(){
 }
 function skipWeek(){S.newAch=[];advanceWeek(new Set());S.screen='home';publishShared();}
 /* ---------- shared testers ---------- */
+let SB=null;
 const SH={db:null,user:null,uid:null,list:[],ready:false,canWrite:null,err:null,q:Promise.resolve(),names:{}};
 function r2(a){return a.map(x=>Math.round(x*100)/100);}
 function sharedData(){
@@ -1721,15 +1724,16 @@ function sharedData(){
     st:{mv:r2(st.mv),op:r2(st.op),tr:{W:r2(st.tr.W),L:r2(st.tr.L),T:r2(st.tr.T)}},eh:me.eh.slice(-30),upd:Date.now()};
 }
 function sharedWrite(fn){
-  if(!SH.db||!SH.uid||SH.canWrite===false)return;
-  SH.q=SH.q.then(async()=>{
-    try{
-      const ref=SH.db.doc('players/'+SH.uid),snap=await ref.get();
-      const cur=snap.exists?JSON.parse(JSON.stringify(snap.data().careers||{})):{};
-      fn(cur);
-      await ref.set({careers:cur});SH.canWrite=true;
-    }catch(e){if(e&&e.code==='invalid_argument'){SH.canWrite=false;if(S&&S.screen==='tester')render();}}
-  });
+  if(!SB||!SH.uid)return;
+  SH.q=SH.q.then(async()=>{try{
+    const {data,error}=await SB.from('careers_public').select('slot,data').eq('user_id',SH.uid);if(error)throw error;
+    const cur={};(data||[]).forEach(r=>{cur[r.slot]=r.data;});const before=Object.keys(cur);
+    fn(cur);
+    const rows=Object.keys(cur).map(slot=>({user_id:SH.uid,slot,data:cur[slot],updated_at:new Date().toISOString()}));
+    if(rows.length){const r=await SB.from('careers_public').upsert(rows);if(r.error)throw r.error;}
+    const del=before.filter(x=>!(x in cur));if(del.length)await SB.from('careers_public').delete().eq('user_id',SH.uid).in('slot',del);
+    SH.canWrite=true;refreshShared();
+  }catch(e){SH.writeErr=String(e&&e.message||e);}});
 }
 function publishShared(){if(S){sharedWrite(c=>{c[S.slot]=sharedData();});cloudSave();}updatePresence();}
 function unpublishSlot(id){sharedWrite(c=>{delete c[id];});}
@@ -1765,16 +1769,52 @@ function onShared(snap){
 }
 async function initShared(){
   try{
-    if(!window.claude||!window.claude.use)return;
-    const [db,user]=await Promise.all([window.claude.use('db'),window.claude.use('user')]);
-    SH.user=user;
-    if(!db){SH.err='off';if(S&&S.screen==='tester')render();return;}
-    SH.db=db;SH.uid=user?await user.id():null;
-    if(user){const cw=await user.can('data.write');if(cw===false)SH.canWrite=false;}
-    cloudList();
-    db.collection('players').onSnapshot(onShared,e=>{SH.err=e&&e.code||'unavailable';if(S&&S.screen==='tester')render();});
-    if(S)publishShared();
-  }catch(e){SH.err='off';}
+    if(!window.supabase||!window.SUPA_CFG){SH.err='off';return;}
+    if(!SB){
+      SB=window.supabase.createClient(window.SUPA_CFG.url,window.SUPA_CFG.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'implicit'}});
+      SB.auth.onAuthStateChange((ev,session)=>{const uid=session&&session.user?session.user.id:null;if(uid!==SH.uid){SH.uid=uid;SH.email=session&&session.user?session.user.email:null;onLogin();}});
+    }
+    const {data}=await SB.auth.getSession();
+    const ses=data&&data.session;SH.uid=ses?ses.user.id:null;SH.email=ses?ses.user.email:null;
+    onLogin();
+  }catch(e){SH.err='off';render();}
+}
+function onLogin(){
+  clearInterval(SH.poll);
+  if(!SH.uid){SH.db=null;SH.ready=false;SH.list=[];SH.cloud=[];render();return;}
+  SH.db=true;SH.canWrite=true;SH.err=null;ui.loginMsg=null;
+  refreshShared();SH.poll=setInterval(()=>{if(!document.hidden)refreshShared();},20000);
+  cloudList();if(S)publishShared();
+  if(!RM.room)initRoom();
+  render();
+}
+async function refreshShared(){
+  if(!SB||!SH.uid)return;
+  const {data,error}=await SB.from('careers_public').select('user_id,slot,data');
+  if(error){SH.err='unavailable';return;}SH.err=null;
+  const by={};(data||[]).forEach(r=>{(by[r.user_id]=by[r.user_id]||{})[r.slot]=r.data;});
+  onShared({docs:Object.keys(by).map(id=>({id,data:()=>({careers:by[id]})}))});
+}
+function makeRoom(){
+  const me=Math.random().toString(36).slice(2,12);
+  const ch=SB.channel('lobby-scf',{config:{presence:{key:me},broadcast:{self:true}}});
+  let subscribed=false,pending=null,prev=new Map();const peerH=[];const pres={};
+  const toPeers=()=>{const st=ch.presenceState(),out=[];Object.keys(st).forEach(k=>{const metas=st[k]||[],m=metas[metas.length-1]||{};out.push({peer:k,by:m.by||null,isMe:!!m.by&&m.by===SH.uid,sameTab:k===me,kind:'viewer',guest:false,presence:m.p||{},updatedAt:Date.now()});});return out;};
+  ch.on('presence',{event:'sync'},()=>{const ps=toPeers(),now=new Map(ps.map(p=>[p.peer,p]));const joined=ps.filter(p=>!prev.has(p.peer)),left=[...prev.values()].filter(p=>!now.has(p.peer));prev=now;peerH.forEach(f=>{try{f({peers:ps,joined,left,updated:ps});}catch(e){}});});
+  setTimeout(()=>ch.subscribe(st=>{if(st==='SUBSCRIBED'){subscribed=true;if(pending)ch.track(pending);}}),0);
+  return {
+    presence:async patch=>{Object.keys(patch).forEach(k=>{if(patch[k]===null)delete pres[k];else pres[k]=patch[k];});pending={by:SH.uid,p:JSON.parse(JSON.stringify(pres))};if(subscribed)await ch.track(pending);},
+    emit:async(topic,data)=>{if(!subscribed)return;await ch.send({type:'broadcast',event:topic,payload:{data,peer:me,by:SH.uid}});},
+    on:(topic,f)=>{ch.on('broadcast',{event:topic},msg=>{const p=msg&&msg.payload;if(!p)return;f({topic,data:p.data,peer:p.peer,by:p.by,isMe:!!p.by&&p.by===SH.uid,sameTab:p.peer===me,kind:'viewer',guest:false});});return ()=>{};},
+    onPeers:f=>{peerH.push(f);return ()=>{};},
+    peers:()=>toPeers(),connected:()=>subscribed
+  };
+}
+window.claude={use:async n=>n==='room'&&SB&&SH.uid?makeRoom():null};
+function loginCard(){
+  if(!window.supabase||!window.SUPA_CFG)return `<article class="card"><p class="note">Non riesco a collegarmi al server degli amici: controlla la connessione e ricarica la pagina. Il gioco in singolo funziona lo stesso.</p></article>`;
+  if(SH.uid)return `<article class="card"><div class="row"><span class="label">Account</span><button class="linkbtn" data-act="logout">Esci</button></div><p class="note">Collegato come <strong>${esc(SH.email||'giocatore')}</strong>. Classifica degli amici, sfide dal vivo e salvataggio nel cloud sono attivi.</p></article>`;
+  return `<article class="card"><div class="label">Gioca con gli amici</div><p class="note">Accedi con la tua email per comparire nella classifica degli amici, sfidarli dal vivo e salvare le carriere nel cloud. Senza accesso puoi comunque giocare in singolo.</p><div class="field"><label class="label" for="in-email">La tua email</label><input class="txt" id="in-email" type="email" autocomplete="email" placeholder="nome@esempio.it"></div><button class="btn sm" data-act="login">Mandami il link di accesso</button>${ui.loginMsg?`<p class="note">${esc(ui.loginMsg)}</p>`:'<p class="note">Ti arriva un’email «Your sign-in link»: aprila da questo dispositivo e tocca Sign in.</p>'}</article>`;
 }
 /* ---------- cloud saves (private to each viewer) ---------- */
 async function gz(str){
@@ -1791,30 +1831,26 @@ async function gunz(enc,d){
 const CHUNK=200000;let cloudQ=Promise.resolve();
 function cloudCol(){return SH.db&&SH.uid?SH.db.collection('data/users/'+SH.uid):null;}
 function cloudSave(){
-  const col=cloudCol();if(!col||!S)return;
-  const snap=JSON.stringify(S),meta=slotMeta(S),slot=S.slot;
-  cloudQ=cloudQ.then(async()=>{try{
-    const z=await gz(snap),parts=[];for(let i=0;i<z.d.length;i+=CHUNK)parts.push(z.d.slice(i,i+CHUNK));
-    for(let i=0;i<parts.length;i++)await col.doc('save-'+slot+'-'+i).set({d:parts[i]});
-    await col.doc('save-'+slot).set({meta,n:parts.length,enc:z.enc,upd:Date.now()});SH.cloudOk=true;
-  }catch(e){SH.cloudOk=false;}});
+  if(!SB||!SH.uid||!S)return;
+  const snap=JSON.stringify(S),meta=slotMeta(S),slot=S.slot,uid=SH.uid;
+  cloudQ=cloudQ.then(async()=>{try{const z=await gz(snap);const r=await SB.from('career_saves').upsert({user_id:uid,slot,meta,enc:z.enc,payload:z.d,updated_at:new Date().toISOString()});SH.cloudOk=!r.error;}catch(e){SH.cloudOk=false;}});
 }
 async function cloudList(){
-  const col=cloudCol();if(!col)return;
-  try{const snap=await col.where('n','>=',1).get();SH.cloud=snap.docs.map(d=>{const v=d.data()||{};return Object.assign({},v.meta||{},{id:d.id.slice(5),n:v.n,enc:v.enc,cupd:v.upd||0});}).filter(x=>x.id&&x.name);if(!S)render();}catch(e){}
+  if(!SB||!SH.uid)return;
+  try{const {data,error}=await SB.from('career_saves').select('slot,meta,updated_at').eq('user_id',SH.uid);if(error)return;
+    SH.cloud=(data||[]).map(r=>Object.assign({},r.meta||{},{id:r.slot,n:1,cupd:Date.parse(r.updated_at)||0})).filter(x=>x.id&&x.name);if(!S)render();}catch(e){}
 }
 async function cloudLoad(id){
-  const col=cloudCol();if(!col)throw new Error('off');
-  const m=await col.doc('save-'+id).get();if(!m.exists)throw new Error('missing');
-  const md=m.data();let d='';for(let i=0;i<md.n;i++){const c=await col.doc('save-'+id+'-'+i).get();if(!c.exists)throw new Error('chunk');d+=c.data().d;}
-  const v=JSON.parse(await gunz(md.enc,d));if(!v||v.v!==4)throw new Error('version');return v;
+  if(!SB||!SH.uid)throw new Error('off');
+  const {data,error}=await SB.from('career_saves').select('enc,payload').eq('user_id',SH.uid).eq('slot',id).maybeSingle();
+  if(error||!data)throw new Error('missing');
+  const v=JSON.parse(await gunz(data.enc,data.payload));if(!v||v.v!==4)throw new Error('version');return v;
 }
 function cloudDelete(id){
-  const col=cloudCol();if(!col)return;const c=(SH.cloud||[]).find(x=>x.id===id),n=c&&c.n||3;
-  cloudQ=cloudQ.then(async()=>{try{await col.doc('save-'+id).delete();for(let i=0;i<n;i++)await col.doc('save-'+id+'-'+i).delete();}catch(e){}});
+  if(!SB||!SH.uid)return;const uid=SH.uid;
+  cloudQ=cloudQ.then(()=>SB.from('career_saves').delete().eq('user_id',uid).eq('slot',id)).catch(()=>{});
   SH.cloud=(SH.cloud||[]).filter(x=>x.id!==id);
 }
-
 /* ---------- live duels between testers ---------- */
 const RM={room:null,ok:false,peers:[],me:null,invites:[],pending:null,duel:null,lastPres:''};
 const rid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
@@ -1954,13 +1990,13 @@ function renderTester(){
     <p class="note">Sfida dal vivo chi ha il gioco aperto in questo momento e confronta le carriere di tutti. Le carriere degli altri entrano anche nel tuo circuito come giocatori da affrontare, con le abitudini che hanno davvero.</p></article>`;
   const on=RM.peers.filter(p=>!p.sameTab&&p.kind==='viewer'&&p.presence&&p.presence.scf&&typeof p.presence.scf==='object');
   h+=`<article class="card"><div class="row"><span class="label">Sfide dal vivo</span><span class="tag">${S&&S.duels?`le tue: ${S.duels.w}–${S.duels.l}`:''}</span></div>`;
-  if(!RM.ok)h+=`<p class="note">Le sfide dal vivo funzionano quando il gioco è aperto da claude.ai, con l'accesso da Collaboratore.</p>`;
-  else if(!on.length)h+=`<p class="note">Nessun altro ha il gioco aperto adesso. Quando qualcuno entra lo vedi qui. Per provare da solo, apri il gioco in un'altra scheda.</p>`;
+  if(!RM.ok)h+=`<p class="note">${SH.uid?'Mi collego alla stanza delle sfide…':'Accedi con la tua email, qui sopra, per sfidare gli amici dal vivo.'}</p>`;
+  else if(!on.length)h+=`<p class="note">Nessun altro ha il gioco aperto adesso. Quando qualcuno entra lo vedi qui. Per provare da solo, apri il gioco in un'altra scheda con lo stesso account.</p>`;
   else h+=on.map(p=>{const v=p.presence.scf,busy=!!v.busy,t=typeof v.t==='number'&&v.t>=0&&TITLES[v.t]?`<span class="tchip">${TITLES[v.t].k}</span>`:'';
     return `<div class="online">${avatar({name:cleanStr(v.n)||'?'},36)}<span style="min-width:0"><b>${t}${esc(cleanStr(v.n)||'Tester')}</b><br><span class="tag"><span class="dot"></span>${Math.round(+v.e||0)} Elo${p.isMe?' · tu, altra scheda':''}${busy?' · in sfida':''}</span></span>${RM.pending&&RM.pending.to===p.peer?'<span class="tag">In attesa…</span>':`<button class="btn sm" data-act="dinv" data-p="${esc(p.peer)}" ${busy||RM.pending||!S?'disabled':''}>Sfida</button>`}</div>`;}).join('');
   h+=`<p class="note">Al meglio dei 3, regole normali. Le sfide tra amici non cambiano l'Elo: finiscono nelle notizie e nel tuo bilancio.</p></article>`;
+  h+=loginCard();
   if(!SH.db){
-    h+=`<article class="card"><p class="note">${SH.err==='off'?'La classifica condivisa non è disponibile in questa visualizzazione: apri il gioco da claude.ai con un account che ha accesso.':'Mi collego alla classifica condivisa…'}</p></article>`;
   } else {
     if(SH.canWrite===false)h+=`<div class="banner"><b>Sei in sola lettura</b>Vedi la classifica ma la tua carriera non compare: chiedi a chi ha condiviso il gioco di darti l'accesso da Collaboratore.</div>`;
     if(SH.err)h+=`<p class="note">La classifica non si aggiorna in questo momento. Riapri la pagina più tardi.</p>`;
@@ -1979,7 +2015,7 @@ function renderStart(){
   const ix=readIdx(),slots=ix.slots.slice().sort((a,b)=>(b.upd||0)-(a.upd||0));
   const cl=(SH.cloud||[]).filter(c=>{const l=ix.slots.find(x=>x.id===c.id);return !l||(c.upd||0)>(l.upd||0)+60000;});
   const cloudH=cl.length?`<article class="card"><div class="label">Nel cloud</div><p class="note">Carriere salvate online con il tuo account, non presenti o più aggiornate su questo dispositivo.</p><div>${cl.map(c=>`<div class="slot">${avatar({name:c.name,human:true},40)}<div style="min-width:0"><strong>${esc(c.name)}</strong><div class="meta2">${c.elo} Elo · anno ${c.year}, settimana ${c.week}</div></div><div class="acts"><button class="btn" data-act="cload" data-s="${esc(c.id)}">Scarica</button></div></div>`).join('')}</div></article>`:'';
-  $('#slots').innerHTML=cloudH+(slots.length?`<article class="card"><div class="label">Carriere su questo dispositivo</div><div>${slots.map(c=>`<div class="slot">${avatar({name:c.name,human:true},40)}<div style="min-width:0"><strong>${esc(c.name)}</strong><div class="meta2">${c.title>=0&&TITLES[c.title]?TITLES[c.title].k+' · ':''}${c.elo} Elo · anno ${c.year}, settimana ${c.week}${c.ret?' · ritirato':''}</div></div><div class="acts">${ui.delSlot===c.id?`<button class="btn danger" data-act="sdel-yes" data-s="${c.id}">Elimina</button><button class="btn ghost" data-act="sdel-no">No</button>`:`<button class="btn" data-act="sopen" data-s="${c.id}">Gioca</button><button class="btn ghost" data-act="sdel" data-s="${c.id}" aria-label="Elimina ${esc(c.name)}">✕</button>`}</div></div>`).join('')}</div><p class="note">${SH.uid?'Le carriere si salvano anche nel cloud, a fine torneo: le ritrovi da un altro dispositivo con lo stesso account.':'Il salvataggio nel cloud si attiva quando il gioco è aperto da claude.ai.'}</p></article>`:'');
+  $('#slots').innerHTML=loginCard()+cloudH+(slots.length?`<article class="card"><div class="label">Carriere su questo dispositivo</div><div>${slots.map(c=>`<div class="slot">${avatar({name:c.name,human:true},40)}<div style="min-width:0"><strong>${esc(c.name)}</strong><div class="meta2">${c.title>=0&&TITLES[c.title]?TITLES[c.title].k+' · ':''}${c.elo} Elo · anno ${c.year}, settimana ${c.week}${c.ret?' · ritirato':''}</div></div><div class="acts">${ui.delSlot===c.id?`<button class="btn danger" data-act="sdel-yes" data-s="${c.id}">Elimina</button><button class="btn ghost" data-act="sdel-no">No</button>`:`<button class="btn" data-act="sopen" data-s="${c.id}">Gioca</button><button class="btn ghost" data-act="sdel" data-s="${c.id}" aria-label="Elimina ${esc(c.name)}">✕</button>`}</div></div>`).join('')}</div><p class="note">${SH.uid?'Le carriere si salvano anche nel cloud, a fine torneo: le ritrovi da un altro dispositivo con lo stesso account.':'Accedi con la tua email per salvare le carriere anche nel cloud.'}</p></article>`:'');
 }
 
 /* ---------- view helpers ---------- */
@@ -2493,6 +2529,10 @@ $('#f-start').addEventListener('submit',e=>{
 document.addEventListener('click',e=>{
   const t=e.target.closest('[data-act]');if(!t)return;
   const a=t.dataset.act;
+  if(a==='login'){const el=document.getElementById('in-email'),em=(el&&el.value||'').trim();if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ui.loginMsg='Scrivi un indirizzo email valido.';render();return;}
+    ui.loginMsg='Invio il link…';render();
+    SB.auth.signInWithOtp({email:em,options:{emailRedirectTo:location.origin+location.pathname,shouldCreateUser:true}}).then(({error})=>{ui.loginMsg=error?(/rate|limit|seconds/i.test(error.message)?'Troppe email inviate in poco tempo: riprova tra qualche minuto.':'Non sono riuscito a inviare il link: '+error.message):`Ti ho mandato il link a ${em}. Aprilo da questo dispositivo.`;render();});return;}
+  if(a==='logout'){if(SB)SB.auth.signOut();SH.uid=null;onLogin();return;}
   if(a==='dacc'){const x=RM.invites.find(y=>y.from===t.dataset.p);if(x){rEmit('answer',{to:x.from,id:x.id,ok:true,n:S?cleanStr(S.name):'Tester',e:S?Math.round(P(0).elo):0});duelStart(x.from,x.id,x.n,x.e);}return;}
   if(a==='drej'){const x=RM.invites.find(y=>y.from===t.dataset.p);if(x)rEmit('answer',{to:x.from,id:x.id,ok:false});RM.invites=RM.invites.filter(y=>y.from!==t.dataset.p);renderInvites();return;}
   if(a==='dpick'){duelPick(t.dataset.m);return;}
@@ -2570,7 +2610,7 @@ function sane(){
 try{window.claude?.hot?.snapshot?.(()=>({S}));}catch(e){}
 setInterval(blitzTick,100);
 migrateOld();
-const start=data=>{S=(data&&data.S)||null;if(S&&S.v!==4)S=null;if(S){sane();syncGhosts();}render();initShared();initRoom();};
+const start=data=>{S=(data&&data.S)||null;if(S&&S.v!==4)S=null;if(S){sane();syncGhosts();}render();initShared();};
 try{window.claude?.hot?.ready?window.claude.hot.ready(start):start(window.claude?.hot?.data??{});}catch(e){start({});}
 })();
 </script>
