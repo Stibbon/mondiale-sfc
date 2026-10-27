@@ -1814,7 +1814,7 @@ window.claude={use:async n=>n==='room'&&SB&&SH.uid?makeRoom():null};
 function loginCard(){
   if(!window.supabase||!window.SUPA_CFG)return `<article class="card"><p class="note">Non riesco a collegarmi al server degli amici: controlla la connessione e ricarica la pagina. Il gioco in singolo funziona lo stesso.</p></article>`;
   if(SH.uid)return `<article class="card"><div class="row"><span class="label">Account</span><button class="linkbtn" data-act="logout">Esci</button></div><p class="note">Collegato come <strong>${esc(SH.email||'giocatore')}</strong>. Classifica degli amici, sfide dal vivo e salvataggio nel cloud sono attivi.</p></article>`;
-  return `<article class="card"><div class="label">Gioca con gli amici</div><p class="note">Accedi con la tua email per comparire nella classifica degli amici, sfidarli dal vivo e salvare le carriere nel cloud. Senza accesso puoi comunque giocare in singolo.</p><div class="field"><label class="label" for="in-email">La tua email</label><input class="txt" id="in-email" type="email" autocomplete="email" placeholder="nome@esempio.it"></div><button class="btn sm" data-act="login">Mandami il link di accesso</button>${ui.loginMsg?`<p class="note">${esc(ui.loginMsg)}</p>`:'<p class="note">Ti arriva un’email «Your sign-in link»: aprila da questo dispositivo e tocca Sign in.</p>'}</article>`;
+  return `<article class="card"><div class="label">Gioca con gli amici</div><p class="note">Entra con email e password per comparire nella classifica degli amici, sfidarli dal vivo e salvare le carriere nel cloud. Senza accesso puoi comunque giocare in singolo.</p><div class="field"><label class="label" for="in-email">Email</label><input class="txt" id="in-email" type="email" autocomplete="email" placeholder="nome@esempio.it"></div><div class="field"><label class="label" for="in-pass">Password</label><input class="txt" id="in-pass" type="password" autocomplete="current-password" placeholder="almeno 6 caratteri"></div><div class="btns"><button class="btn sm" data-act="login">Entra</button><button class="btn ghost sm" data-act="signup">Crea un account nuovo</button></div>${ui.loginMsg?`<p class="note">${esc(ui.loginMsg)}</p>`:'<p class="note">La prima volta tocca «Crea un account nuovo», poi usa sempre «Entra», da qualsiasi dispositivo.</p>'}</article>`;
 }
 /* ---------- cloud saves (private to each viewer) ---------- */
 async function gz(str){
@@ -2529,9 +2529,15 @@ $('#f-start').addEventListener('submit',e=>{
 document.addEventListener('click',e=>{
   const t=e.target.closest('[data-act]');if(!t)return;
   const a=t.dataset.act;
-  if(a==='login'){const el=document.getElementById('in-email'),em=(el&&el.value||'').trim();if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ui.loginMsg='Scrivi un indirizzo email valido.';render();return;}
-    ui.loginMsg='Invio il link…';render();
-    SB.auth.signInWithOtp({email:em,options:{emailRedirectTo:location.origin+location.pathname,shouldCreateUser:true}}).then(({error})=>{ui.loginMsg=error?(/rate|limit|seconds/i.test(error.message)?'Troppe email inviate in poco tempo: riprova tra qualche minuto.':'Non sono riuscito a inviare il link: '+error.message):`Ti ho mandato il link a ${em}. Aprilo da questo dispositivo.`;render();});return;}
+  if(a==='login'||a==='signup'){const em=((document.getElementById('in-email')||{}).value||'').trim(),pw=(document.getElementById('in-pass')||{}).value||'';
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ui.loginMsg='Scrivi un indirizzo email valido.';render();return;}
+    if(pw.length<6){ui.loginMsg='La password deve avere almeno 6 caratteri.';render();return;}
+    ui.loginMsg=a==='login'?'Entro…':'Creo l’account…';render();
+    const pr=a==='login'?SB.auth.signInWithPassword({email:em,password:pw}):SB.auth.signUp({email:em,password:pw});
+    pr.then(({data,error})=>{
+      if(error){const m=error.message||'';ui.loginMsg=/invalid login/i.test(m)?'Email o password sbagliate. Se è la prima volta, tocca «Crea un account nuovo».':/already registered|already exists/i.test(m)?'Questa email ha già un account: tocca «Entra».':/rate|limit|seconds/i.test(m)?'Troppi tentativi in poco tempo: riprova tra qualche minuto.':'Non sono riuscito ad accedere: '+m;render();return;}
+      if(a==='signup'&&!(data&&data.session)){ui.loginMsg='Account creato, ma Supabase chiede ancora la conferma via email: chi gestisce il progetto deve disattivare «Confirm email».';render();return;}
+      ui.loginMsg=null;});return;}
   if(a==='logout'){if(SB)SB.auth.signOut();SH.uid=null;onLogin();return;}
   if(a==='dacc'){const x=RM.invites.find(y=>y.from===t.dataset.p);if(x){rEmit('answer',{to:x.from,id:x.id,ok:true,n:S?cleanStr(S.name):'Tester',e:S?Math.round(P(0).elo):0});duelStart(x.from,x.id,x.n,x.e);}return;}
   if(a==='drej'){const x=RM.invites.find(y=>y.from===t.dataset.p);if(x)rEmit('answer',{to:x.from,id:x.id,ok:false});RM.invites=RM.invites.filter(y=>y.from!==t.dataset.p);renderInvites();return;}
